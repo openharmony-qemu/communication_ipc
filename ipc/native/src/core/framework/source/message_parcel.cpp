@@ -51,6 +51,8 @@ using namespace IPC_SINGLE;
 #endif
 static constexpr OHOS::HiviewDFX::HiLogLabel LOG_LABEL = { LOG_CORE, LOG_ID_IPC_PARCEL, "MessageParcel" };
 
+static constexpr int REMOTE_RAW_DATA_FD = -2;
+
 void AcquireObject(flat_binder_object *flat, const void *cookie)
 {
     if (flat == nullptr) {
@@ -106,11 +108,11 @@ MessageParcel::~MessageParcel()
         kernelMappedRead_ = nullptr;
     }
 
-    if (readRawDataFd_ > 0) {
+    if (readRawDataFd_ >= 0) {
         ::fdsan_close_with_tag(readRawDataFd_, IPC_FD_TAG);
         readRawDataFd_ = -1;
     }
-    if (writeRawDataFd_ > 0) {
+    if (writeRawDataFd_ >= 0) {
         ::fdsan_close_with_tag(writeRawDataFd_, IPC_FD_TAG);
         writeRawDataFd_ = -1;
     }
@@ -284,63 +286,47 @@ int MessageParcel::ReadFileDescriptor()
 
 void MessageParcel::ClearFileDescriptor()
 {
-    size_t dataOffset = 0;
-    binder_size_t *object = nullptr;
-    const flat_binder_object *flat = nullptr;
-    for (size_t i = 0; i < GetOffsetsSize(); i++) {
-        object = reinterpret_cast<binder_size_t *>(GetObjectOffsets());
-        if (object == nullptr) {
-            ZLOGE(LOG_LABEL, "object get by GetObjectOffsets() is nullptr");
+    const auto* objects = reinterpret_cast<const binder_size_t*>(GetObjectOffsets());
+    if (objects == nullptr || GetData() == 0) {
+        return;
+    }
+    for (size_t i = 0; i < GetOffsetsSize(); ++i) {
+        const binder_size_t offset = objects[i];
+        if (offset > GetDataSize() || sizeof(flat_binder_object) > GetDataSize() - offset) {
+            ZLOGE(LOG_LABEL, "object offset is outside parcel data");
             break;
         }
-        // offset + size
-        dataOffset = object[i] + sizeof(flat_binder_object);
-        if (dataOffset > GetDataSize()) {
-            ZLOGE(LOG_LABEL, "object offset is overflow, dataOffset:%{public}zu dataSize:%{public}zu", dataOffset,
-                GetDataSize());
+        flat_binder_object flat {};
+        if (memcpy_s(&flat, sizeof(flat), reinterpret_cast<const void*>(GetData() + offset), sizeof(flat)) != EOK) {
             break;
         }
-        uintptr_t data = GetData();
-        if (data == 0) {
-            ZLOGE(LOG_LABEL, "data get by GetData() is invalid");
-            break;
-        }
-        flat = reinterpret_cast<flat_binder_object *>(data + object[i]);
-        if (flat->hdr.type == BINDER_TYPE_FD && flat->handle > 0) {
-            ::close(flat->handle);
+        const int32_t fd = static_cast<int32_t>(flat.handle);
+        if (flat.hdr.type == BINDER_TYPE_FD && fd >= 0) {
+            ::close(fd);
         }
     }
 }
 
 bool MessageParcel::ContainFileDescriptors() const
 {
-    size_t dataOffset = 0;
-    binder_size_t *object = nullptr;
-    const flat_binder_object *flat = nullptr;
-    for (size_t i = 0; i < GetOffsetsSize(); i++) {
-        object = reinterpret_cast<binder_size_t *>(GetObjectOffsets());
-        if (object == nullptr) {
-            ZLOGE(LOG_LABEL, "object get by GetObjectOffsets() is nullptr");
+    const auto* objects = reinterpret_cast<const binder_size_t*>(GetObjectOffsets());
+    if (objects == nullptr || GetData() == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < GetOffsetsSize(); ++i) {
+        const binder_size_t offset = objects[i];
+        if (offset > GetDataSize() || sizeof(flat_binder_object) > GetDataSize() - offset) {
+            ZLOGE(LOG_LABEL, "object offset is outside parcel data");
             break;
         }
-        // offset + size
-        dataOffset = object[i] + sizeof(flat_binder_object);
-        if (dataOffset > GetDataSize()) {
-            ZLOGE(LOG_LABEL, "object offset is overflow, dataOffset:%{public}zu dataSize:%{public}zu", dataOffset,
-                GetDataSize());
+        flat_binder_object flat {};
+        if (memcpy_s(&flat, sizeof(flat), reinterpret_cast<const void*>(GetData() + offset), sizeof(flat)) != EOK) {
             break;
         }
-        uintptr_t data = GetData();
-        if (data == 0) {
-            ZLOGE(LOG_LABEL, "data get by GetData() is invalid");
-            break;
-        }
-        flat = reinterpret_cast<flat_binder_object *>(data + object[i]);
-        if (flat->hdr.type == BINDER_TYPE_FD) {
+        if (flat.hdr.type == BINDER_TYPE_FD) {
             return true;
         }
     }
-
     return false;
 }
 
@@ -444,14 +430,15 @@ bool MessageParcel::RestoreRawData(std::shared_ptr<char> rawData, size_t size)
     ZLOGD(LOG_LABEL, "enter");
     rawData_ = rawData;
     rawDataSize_ = size;
-    writeRawDataFd_ = 0;
+    // A negative state marker cannot be confused with an owned FD 0.
+    writeRawDataFd_ = REMOTE_RAW_DATA_FD;
     return true;
 }
 
 const void *MessageParcel::ReadRawDataInner(size_t size)
 {
-    /* if rawDataFd_ == 0 means rawData is received from remote */
-    if (rawData_ != nullptr && writeRawDataFd_ == 0) {
+    /* REMOTE_RAW_DATA_FD means rawData is received from remote. */
+    if (rawData_ != nullptr && writeRawDataFd_ == REMOTE_RAW_DATA_FD) {
         /* should read fd for move readCursor of parcel */
         int32_t tmpfd = ReadFileDescriptor();
         if (tmpfd >= 0) {
@@ -579,7 +566,11 @@ sptr<Ashmem> MessageParcel::ReadAshmem()
         ::close(fd);
         return nullptr;
     }
-    return new (std::nothrow) Ashmem(fd, size);
+    sptr<Ashmem> ashmem = new (std::nothrow) Ashmem(fd, size);
+    if (ashmem == nullptr) {
+        ::close(fd);
+    }
+    return ashmem;
 }
 
 bool MessageParcel::Append(MessageParcel &data)

@@ -65,7 +65,9 @@ void SendRequestCbComplete(napi_env env, napi_status status, void *data)
     napi_value callback = nullptr;
     napi_get_reference_value(env, param->callback, &callback);
     napi_value cbResult = nullptr;
-    napi_call_function(env, nullptr, callback, 1, &result, &cbResult);
+    napi_value args[2] = {nullptr, nullptr};
+    MakeSendRequestCallbackArgs(param, result, args);
+    napi_call_function(env, nullptr, callback, 2, args, &cbResult);
     napi_delete_reference(env, param->jsCodeRef);
     napi_delete_reference(env, param->jsDataRef);
     napi_delete_reference(env, param->jsReplyRef);

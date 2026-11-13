@@ -49,12 +49,12 @@ napi_value NapiError::GetError(napi_env& env) const
     napi_value napiCode = nullptr;
     std::string msg = napiErrMap_[errorCode_].errorMsg;
     int code = napiErrMap_[errorCode_].errorCode;
-    std::string codeStr = std::to_string(code);
 
-    NAPI_CALL(env, napi_create_string_utf8(env, codeStr.c_str(), codeStr.size(), &napiCode));
+    NAPI_CALL(env, napi_create_int32(env, code, &napiCode));
     napi_value napiMsg = nullptr;
     NAPI_CALL(env, napi_create_string_utf8(env, msg.c_str(), msg.size(), &napiMsg));
-    NAPI_CALL(env, napi_create_error(env, napiCode, napiMsg, &napiError));
+    NAPI_CALL(env, napi_create_error(env, nullptr, napiMsg, &napiError));
+    NAPI_CALL(env, napi_set_named_property(env, napiError, "code", napiCode));
 
     ZLOGD(LOG_LABEL, "throw error code:%{public}d, msg:%{public}s,", code, msg.c_str());
     return napiError;

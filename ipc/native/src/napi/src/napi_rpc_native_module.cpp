@@ -21,9 +21,23 @@
 #include "napi_remote_object.h"
 
 namespace OHOS {
+extern napi_value NAPI_RemoteProxy_queryLocalInterface(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_getLocalInterface(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_sendRequest(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_sendMessageRequest(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_addDeathRecipient(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_registerDeathRecipient(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_removeDeathRecipient(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_unregisterDeathRecipient(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_getInterfaceDescriptor(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_getDescriptor(napi_env env, napi_callback_info info);
+extern napi_value NAPI_RemoteProxy_isObjectDead(napi_env env, napi_callback_info info);
+
 EXTERN_C_START
 extern napi_value NAPIIPCSkeletonExport(napi_env env, napi_value exports);
 extern napi_value NAPIRemoteProxyExport(napi_env env, napi_value exports);
+extern napi_value NAPIRemoteInterfaceExport(napi_env env, napi_value exports,
+    const napi_callback *proxyMethods, size_t proxyCount);
 extern napi_value NAPIMessageOptionExport(napi_env env, napi_value exports);
 extern napi_value NAPICallingInfoExport(napi_env env, napi_value exports);
 
@@ -35,6 +49,20 @@ static napi_value RpcExport(napi_env env, napi_value exports)
     NAPIIPCSkeletonExport(env, exports);
     NAPIRemoteObjectExport(env, exports);
     NAPIRemoteProxyExport(env, exports);
+    static constexpr napi_callback proxyMethods[] = {
+        NAPI_RemoteProxy_queryLocalInterface,
+        NAPI_RemoteProxy_getLocalInterface,
+        NAPI_RemoteProxy_sendRequest,
+        NAPI_RemoteProxy_sendMessageRequest,
+        NAPI_RemoteProxy_addDeathRecipient,
+        NAPI_RemoteProxy_registerDeathRecipient,
+        NAPI_RemoteProxy_removeDeathRecipient,
+        NAPI_RemoteProxy_unregisterDeathRecipient,
+        NAPI_RemoteProxy_getInterfaceDescriptor,
+        NAPI_RemoteProxy_getDescriptor,
+        NAPI_RemoteProxy_isObjectDead,
+    };
+    NAPIRemoteInterfaceExport(env, exports, proxyMethods, sizeof(proxyMethods) / sizeof(proxyMethods[0]));
     NAPIMessageOptionExport(env, exports);
     NapiError::NAPIRpcErrorEnumExport(env, exports);
     NAPICallingInfoExport(env, exports);

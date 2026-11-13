@@ -124,5 +124,6 @@ struct SendRequestParam {
 };
 
 napi_value MakeSendRequestResult(SendRequestParam *param);
+void MakeSendRequestCallbackArgs(SendRequestParam *param, napi_value result, napi_value *args);
 } // namespace OHOS
 #endif // NAPI_IPC_OHOS_REMOTE_OBJECT_H

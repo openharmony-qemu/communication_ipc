@@ -49,7 +49,7 @@ private:
     const std::string deviceName_;
     int32_t version_;
     uint64_t featureSet_;
-    uint64_t selfTokenID_;
+    [[maybe_unused]] uint64_t selfTokenID_;
 };
 } // namespace OHOS
 #endif // OHOS_IPC_BINDER_CONNECTOR_H

@@ -191,12 +191,13 @@ uint64_t BinderConnector::GetSelfTokenID()
         (void)fclose(fp);
         return 0;
     }
-    int ret = ioctl(fd, ACCESS_TOKENID_GET_TOKENID, &selfTokenID_);
+    uint64_t token = 0;
+    int ret = ioctl(fd, ACCESS_TOKENID_GET_TOKENID, &token);
     if (ret != 0) {
-        selfTokenID_ = 0;
+        token = 0;
     }
     (void)fclose(fp);
-    return selfTokenID_;
+    return token;
 }
 // LCOV_EXCL_STOP
 
@@ -241,20 +242,18 @@ void BinderConnector::CloseDriverFd()
 // LCOV_EXCL_START
 BinderConnector *BinderConnector::GetInstance()
 {
+    std::lock_guard<std::mutex> lockGuard(skeletonMutex);
     if (instance_ == nullptr) {
-        std::lock_guard<std::mutex> lockGuard(skeletonMutex);
-        if (instance_ == nullptr) {
-            auto temp = new (std::nothrow) BinderConnector(std::string(DRIVER_NAME));
-            if (temp == nullptr) {
-                ZLOGE(LABEL, "create BinderConnector object failed");
-                return nullptr;
-            }
-            if (!temp->OpenDriver()) {
-                delete temp;
-                temp = nullptr;
-            }
-            instance_ = temp;
+        auto temp = new (std::nothrow) BinderConnector(std::string(DRIVER_NAME));
+        if (temp == nullptr) {
+            ZLOGE(LABEL, "create BinderConnector object failed");
+            return nullptr;
         }
+        if (!temp->OpenDriver()) {
+            delete temp;
+            temp = nullptr;
+        }
+        instance_ = temp;
     }
 
     return instance_;

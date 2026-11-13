@@ -70,6 +70,44 @@ namespace IPC_SINGLE {
 #define PIDUID_OFFSET 2
 using namespace OHOS::HiviewDFX;
 static constexpr HiviewDFX::HiLogLabel LABEL = { LOG_CORE, LOG_ID_IPC_BINDER_INVOKER, "BinderInvoker" };
+// Only kernel-delivered transactions may enter this helper. Ordinary FD
+// objects belong to userspace; FDA arrays are closed by BC_FREE_BUFFER in the
+// kernel, and FDR is not a Linux Binder object type.
+static void CloseDeliveredFileDescriptors(const binder_transaction_data& transaction)
+{
+    const size_t dataSize = static_cast<size_t>(transaction.data_size);
+    const size_t offsetsBytes = static_cast<size_t>(transaction.offsets_size);
+    const uintptr_t data = static_cast<uintptr_t>(transaction.data.ptr.buffer);
+    const uintptr_t offsets = static_cast<uintptr_t>(transaction.data.ptr.offsets);
+    if (dataSize != transaction.data_size || offsetsBytes != transaction.offsets_size ||
+        data != transaction.data.ptr.buffer || offsets != transaction.data.ptr.offsets ||
+        data == 0 || offsets == 0 || offsetsBytes % sizeof(binder_size_t) != 0 ||
+        dataSize > UINTPTR_MAX - data || offsetsBytes > UINTPTR_MAX - offsets) {
+        return;
+    }
+    const size_t count = offsetsBytes / sizeof(binder_size_t);
+    if (count > dataSize / sizeof(binder_object_header)) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        binder_size_t offset = 0;
+        if (memcpy_s(&offset, sizeof(offset), reinterpret_cast<const void*>(
+            offsets + i * sizeof(offset)), sizeof(offset)) != EOK || offset > dataSize ||
+            sizeof(flat_binder_object) > dataSize - static_cast<size_t>(offset)) {
+            continue;
+        }
+        flat_binder_object object {};
+        if (memcpy_s(&object, sizeof(object), reinterpret_cast<const void*>(data + offset),
+            sizeof(object)) != EOK) {
+            continue;
+        }
+        const int32_t fd = static_cast<int32_t>(object.handle);
+        if (object.hdr.type == BINDER_TYPE_FD && fd >= 0) {
+            ::close(fd);
+        }
+    }
+}
+
 #ifndef CONFIG_IPC_SINGLE
 static constexpr pid_t INVALID_PID = -1;
 static constexpr int32_t BINDER_ALIGN_BYTES = 8;
@@ -984,6 +1022,8 @@ void BinderInvoker::Transaction(binder_transaction_data_secctx& trSecctx)
     auto binderAllocator = new (std::nothrow) BinderAllocator();
     if (binderAllocator == nullptr) {
         ZLOGE(LABEL, "BinderAllocator Creation failed");
+        CloseDeliveredFileDescriptors(tr);
+        FreeBuffer(reinterpret_cast<void*>(tr.data.ptr.buffer));
         return;
     }
     auto data = std::make_unique<MessageParcel>(binderAllocator);
@@ -1131,10 +1171,15 @@ int BinderInvoker::HandleReply(MessageParcel *reply, bool &isStubRet)
         ZLOGE(LABEL, "HandleReply read tr failed");
         return IPC_INVOKER_INVALID_DATA_ERR;
     }
-    const binder_transaction_data *tr = reinterpret_cast<const binder_transaction_data *>(buffer);
+    binder_transaction_data alignedTransaction {};
+    if (memcpy_s(&alignedTransaction, sizeof(alignedTransaction), buffer, readSize) != EOK) {
+        return IPC_INVOKER_INVALID_DATA_ERR;
+    }
+    const binder_transaction_data *tr = &alignedTransaction;
 
     if (reply == nullptr) {
         ZLOGD(LABEL, "no need reply, free the buffer");
+        CloseDeliveredFileDescriptors(*tr);
         FreeBuffer(reinterpret_cast<void *>(tr->data.ptr.buffer));
         return IPC_INVOKER_INVALID_REPLY_ERR;
     }
@@ -1143,6 +1188,7 @@ int BinderInvoker::HandleReply(MessageParcel *reply, bool &isStubRet)
         isStubRet = true;
         int32_t status = *reinterpret_cast<const int32_t *>(tr->data.ptr.buffer);
         ZLOGD(LABEL, "received status code:%{public}d, free the buffer", status);
+        CloseDeliveredFileDescriptors(*tr);
         FreeBuffer(reinterpret_cast<void *>(tr->data.ptr.buffer));
         return status;
     }
@@ -1150,12 +1196,14 @@ int BinderInvoker::HandleReply(MessageParcel *reply, bool &isStubRet)
     auto allocator = new (std::nothrow) BinderAllocator();
     if (allocator == nullptr) {
         ZLOGE(LABEL, "create BinderAllocator object failed");
+        CloseDeliveredFileDescriptors(*tr);
         FreeBuffer(reinterpret_cast<void *>(tr->data.ptr.buffer));
         return IPC_INVOKER_INVALID_DATA_ERR;
     }
     if (!reply->SetAllocator(allocator)) {
         ZLOGD(LABEL, "SetAllocator failed");
         delete allocator;
+        CloseDeliveredFileDescriptors(*tr);
         FreeBuffer(reinterpret_cast<void *>(tr->data.ptr.buffer));
         return IPC_INVOKER_INVALID_DATA_ERR;
     }
@@ -1759,7 +1807,11 @@ sptr<IRemoteObject> BinderInvoker::UnflattenObject(Parcel &parcel)
     }
 
     sptr<IRemoteObject> remoteObject = nullptr;
-    auto *flat = reinterpret_cast<const flat_binder_object *>(buffer);
+    flat_binder_object alignedObject {};
+    if (memcpy_s(&alignedObject, sizeof(alignedObject), buffer, sizeof(alignedObject)) != EOK) {
+        return nullptr;
+    }
+    const auto* flat = &alignedObject;
     switch (flat->hdr.type) {
         case BINDER_TYPE_BINDER: {
             auto stubObject = reinterpret_cast<IRemoteObject *>(flat->cookie);
@@ -1797,7 +1849,11 @@ int BinderInvoker::ReadFileDescriptor(Parcel &parcel)
         return fd;
     }
 
-    auto *flat = reinterpret_cast<const flat_binder_object *>(buffer);
+    flat_binder_object alignedObject {};
+    if (memcpy_s(&alignedObject, sizeof(alignedObject), buffer, sizeof(alignedObject)) != EOK) {
+        return fd;
+    }
+    const auto* flat = &alignedObject;
     if (flat->hdr.type == BINDER_TYPE_FD || flat->hdr.type == BINDER_TYPE_FDR) {
         fd = flat->handle;
         ZLOGD(LABEL, "fd:%{public}d", fd);
